@@ -38,8 +38,8 @@ C0 = 299792458.0
 
 @dataclass
 class SinuousParams:
-    f_low_ghz: float = 0.8          # lowest design frequency
-    f_high_ghz: float = 8.0         # highest design frequency
+    f_low_ghz: float = 2.0          # lowest design frequency
+    f_high_ghz: float = 10.0        # highest design frequency
     alpha_deg: float = 45.0         # arm swing angle
     delta_deg: float = 22.5         # arm half-width (22.5 = self-complementary for 4 arms)
     tau: float = 0.8                # cell growth ratio
