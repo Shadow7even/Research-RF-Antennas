@@ -16,7 +16,7 @@ Every run creates its own folder results/<date>_<mode>/ with:
   log.txt                 everything printed during the run
 
 WHAT IS MODELLED (stage 1 of the plan)
-  Sinuous arms on a Rogers RO4003C disc, fed at the centre by four small lumped ports
+  Sinuous arms on a Taconic TLY disc (same substrate as the group's reference model), fed at the centre by four small lumped ports
   (one per arm). No balun and no cavity yet: post-processing combines the ports in pairs
   (P1&P3 = polarization X, P2&P4 = polarization Y), which is what an ideal balun does.
 """
@@ -43,34 +43,40 @@ MODE = "geometry"          # "geometry": build + check the model only, no solve 
                            # "smoke"   : coarse solve to test the whole pipeline (fastest real results)
                            # "full"    : accurate solve for the report (slow, run it overnight if needed)
 AEDT_VERSION = "2025.2"    # the VM has Ansys v252
+AEDT_INSTALL_DIR = ""      # leave empty to auto-detect; else the folder containing 'ansysedt'
 NON_GRAPHICAL = False      # False = HFSS window opens on the remote desktop so you can watch
 KEEP_AEDT_OPEN = True      # leave HFSS open at the end so you can inspect / animate
 NUM_CORES = 4              # 4 is safe with a basic license; raise it if the VM has HPC licenses
 
 # Antenna
-F_LOW_GHZ = 0.8            # lowest frequency  (0.5 makes the antenna ~280 mm wide instead of ~175 mm)
-F_HIGH_GHZ = 8.0           # highest frequency
+F_LOW_GHZ = 2.0            # group target: about 2-10 GHz (antenna ~70 mm wide; 0.8 GHz needs ~175 mm)
+F_HIGH_GHZ = 10.0          # highest frequency
 ALPHA_DEG = 45.0           # arm swing angle
 DELTA_DEG = 22.5           # arm half-width; 22.5 = self-complementary for 4 arms
 TAU = 0.8                  # cell growth ratio
 
-# Substrate (Rogers RO4003C: low loss, cheap for a Rogers laminate, made with normal FR-4 processes)
-SUBSTRATE_NAME = "RO4003C_sim"
-SUBSTRATE_ER = 3.55        # Rogers "design" dielectric constant
-SUBSTRATE_TAND = 0.0027
-SUBSTRATE_H_MM = 0.813     # 32 mil, a standard stock thickness
+# Substrate: Taconic TLY, as in the group's reference model (Sinuous DF Antenna Nov18).
+# Later target is a thin Kapton film: er 3.4, tand 0.002, 0.05-0.125 mm - change these 4 lines.
+SUBSTRATE_LABEL = "Taconic TLY"
+SUBSTRATE_NAME = "TaconicTLY_sim"
+SUBSTRATE_ER = 2.2
+SUBSTRATE_TAND = 0.0009
+SUBSTRATE_H_MM = 1.575
 SUBSTRATE_MARGIN_MM = 5.0  # board extends this far beyond the arms
 
-# Feed: each port is half of a differential pair; 2 x 66.5 = 133 ohm (self-complementary 4-arm value)
-PORT_IMPEDANCE_OHM = 66.5
+# Feed: each port is half of a differential pair -> 2 x 100 = 200 ohm per pair, the value used in the
+# group's reference model. The Oct 2 smoke run gave its best quadrature-feed S11 at this value.
+PORT_IMPEDANCE_OHM = 100.0
 
 SOLVER = {
-    "smoke": dict(adapt_ghz=3.0, max_passes=6, delta_s=0.05, sweep_points=101,
-                  pattern_freqs=[1.0, 2.0, 4.0, 6.0, 8.0]),
-    "full": dict(adapt_ghz=None, max_passes=15, delta_s=0.02, sweep_points=401,   # None = 0.75 * F_HIGH
-                 pattern_freqs=[0.8, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]),
+    "smoke": dict(adapt_ghz=6.0, max_passes=6, delta_s=0.05, sweep_points=101,
+                  pattern_freqs=[2.0, 4.0, 6.0, 8.0, 10.0]),
+    # full: mesh refined at THREE frequencies (low, mid, high) so the whole 2-10 GHz band is accurate
+    "full": dict(adapt_ghz=[3.0, 6.0, 9.0], max_passes=10, delta_s=0.03, sweep_points=201,
+                 pattern_freqs=[2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]),
 }
-FIELD_PLOT_FREQS = [1.0, 2.0, 4.0]   # surface-current pictures (shows the "active region" moving)
+# Surface-current pictures are made at the mesh-adaptation frequencies (the only solutions HFSS
+# always keeps full fields for). Smoke: 3 GHz. Full: 1.5, 4 and 7 GHz -> the active ring moving inward.
 SETUP_NAME = "Setup1"
 SPHERE_NAME = "FarField"
 ###############################################################################
@@ -110,7 +116,32 @@ def call(func, **kwargs):
     return func(**resolved)
 
 
+def find_aedt_install():
+    """PyAEDT finds AEDT through environment variables (ANSYSEM_ROOT252 / AWP_ROOT252). On the lab
+    VM those are not set in a plain terminal, so look in the usual Linux/Windows install folders."""
+    vid = AEDT_VERSION[2:4] + AEDT_VERSION[-1]          # "2025.2" -> "252"
+    if os.environ.get(f"ANSYSEM_ROOT{vid}") or os.environ.get(f"AWP_ROOT{vid}"):
+        return
+    candidates = [
+        AEDT_INSTALL_DIR,
+        f"/opt/Ansys/v{vid}/AnsysEM", f"/opt/ansys/v{vid}/AnsysEM", f"/opt/AnsysEM/v{vid}/Linux64",
+        f"/ansys_inc/v{vid}/AnsysEM", f"/usr/ansys_inc/v{vid}/AnsysEM",
+        rf"C:\Program Files\ANSYS Inc\v{vid}\AnsysEM", rf"C:\Program Files\AnsysEM\v{vid}\Win64",
+    ]
+    for c in candidates:
+        if not c:
+            continue
+        for d in (c, os.path.join(c, "AnsysEM")):
+            if any(os.path.exists(os.path.join(d, exe)) for exe in ("ansysedt", "ansysedt.exe")):
+                os.environ[f"ANSYSEM_ROOT{vid}"] = d
+                log(f"Found AEDT {AEDT_VERSION} in {d}")
+                return
+    log(f"WARNING: AEDT {AEDT_VERSION} install folder not found automatically. "
+        f"Set AEDT_INSTALL_DIR at the top of run_sinuous.py to the folder that contains 'ansysedt'.")
+
+
 def import_hfss():
+    find_aedt_install()
     try:
         from ansys.aedt.core import Hfss
     except ImportError:
@@ -182,16 +213,31 @@ def build_model(hfss, p):
     return metal
 
 
+def adapt_list(s):
+    a = s["adapt_ghz"] or 0.75 * F_HIGH_GHZ
+    return list(a) if isinstance(a, (list, tuple)) else [a]
+
+
 def create_setup(hfss, s):
-    adapt = s["adapt_ghz"] or 0.75 * F_HIGH_GHZ
-    log(f"Solver setup: adapt mesh at {adapt:g} GHz, max {s['max_passes']} passes, max delta S {s['delta_s']}")
+    freqs_adapt = adapt_list(s)
     setup = call(hfss.create_setup, **{"name|setupname": SETUP_NAME})
-    setup.props["Frequency"] = f"{adapt:g}GHz"
     setup.props["MaximumPasses"] = s["max_passes"]
     setup.props["MaxDeltaS"] = s["delta_s"]
     setup.props["MinimumConvergedPasses"] = 1 if MODE == "smoke" else 2
     setup.props["PercentRefinement"] = 30
-    setup.update()
+    setup.props["Frequency"] = f"{freqs_adapt[-1]:g}GHz"
+    if len(freqs_adapt) > 1:
+        setup.props["SolveType"] = "MultiFrequency"
+        setup.props["MultipleAdaptiveFreqsSetup"] = {f"{f:g}GHz": [s["delta_s"]] for f in freqs_adapt}
+    ok = setup.update()
+    if len(freqs_adapt) > 1 and ok is False:
+        log("Multi-frequency mesh setup was not accepted; falling back to a single adaptive frequency")
+        setup.props["SolveType"] = "Single"
+        setup.update()
+        freqs_adapt = freqs_adapt[-1:]
+    log(f"Solver setup: adapt mesh at {', '.join(f'{f:g}' for f in freqs_adapt)} GHz, "
+        f"max {s['max_passes']} passes, max delta S {s['delta_s']}")
+    adapt = freqs_adapt
 
     f1, f2 = round(F_LOW_GHZ * 0.75, 3), round(F_HIGH_GHZ * 1.1, 3)
     log(f"Interpolating sweep {f1:g}-{f2:g} GHz, {s['sweep_points']} points (S-parameters)")
@@ -200,8 +246,8 @@ def create_setup(hfss, s):
         "num_of_freq_points": s["sweep_points"], "name|sweepname": "Sweep",
         "save_fields": False, "sweep_type": "Interpolating"})
 
-    freqs = sorted({f for f in s["pattern_freqs"] if f <= F_HIGH_GHZ + 1e-9} | set(FIELD_PLOT_FREQS))
-    log(f"Discrete points with saved fields (patterns + field plots): {freqs} GHz")
+    freqs = sorted({f for f in s["pattern_freqs"] if f <= F_HIGH_GHZ + 1e-9})
+    log(f"Discrete points with saved far fields (patterns): {freqs} GHz")
     call(setup.create_single_point_sweep, **{
         "unit": "GHz", "freq": list(freqs), "name|sweepname": "Patterns",
         "save_single_field": True, "save_fields": True, "save_rad_fields": True})
@@ -286,12 +332,12 @@ def export_patterns(hfss, run_dir, freqs):
     log(f"Far-field data saved: {path}")
 
 
-def export_field_plots(hfss, run_dir, metal):
-    for f in FIELD_PLOT_FREQS:
+def export_field_plots(hfss, run_dir, metal, adapt_freqs):
+    for f in adapt_freqs:
         try:
             fp = call(hfss.post.create_fieldplot_surface, **{
                 "assignment|objlist": metal, "quantity|quantityName": "Mag_Jsurf",
-                "setup|setup_name": f"{SETUP_NAME} : Patterns",
+                "setup|setup_name": f"{SETUP_NAME} : LastAdaptive",
                 "intrinsics|IntrinsincDict": {"Freq": f"{f:g}GHz", "Phase": "0deg"},
                 "plot_name": f"Jsurf_{f:g}GHz"})
             if fp and hasattr(fp, "export_image"):
@@ -305,7 +351,7 @@ def write_run_info(run_dir, p, extra):
     info = {"run_name": os.path.basename(run_dir), "mode": MODE, "f_low_ghz": F_LOW_GHZ, "f_high_ghz": F_HIGH_GHZ,
             "outer_diameter_mm": f"{2 * p.r_out_mm:.1f}", "inner_radius_mm": f"{p.r_in_mm:.2f}",
             "n_cells": f"{p.n_cells:.1f}", "alpha_deg": ALPHA_DEG, "delta_deg": DELTA_DEG, "tau": TAU,
-            "substrate": f"Rogers RO4003C (er={SUBSTRATE_ER}, tand={SUBSTRATE_TAND})",
+            "substrate": f"{SUBSTRATE_LABEL} (er={SUBSTRATE_ER}, tand={SUBSTRATE_TAND})",
             "substrate_thickness_mm": SUBSTRATE_H_MM, "port_impedance_ohm": PORT_IMPEDANCE_OHM}
     info.update(extra)
     with open(os.path.join(run_dir, "run_info.csv"), "w", newline="") as fh:
@@ -331,7 +377,7 @@ def main(hfss_factory=None):
     log(p.summary())
     write_run_info(run_dir, p, {})
     try:
-        save_preview(p, os.path.join(run_dir, "geometry_preview.png"), f"Substrate RO4003C {SUBSTRATE_H_MM} mm")
+        save_preview(p, os.path.join(run_dir, "geometry_preview.png"), f"Substrate {SUBSTRATE_LABEL} {SUBSTRATE_H_MM} mm")
         log("Geometry preview saved (geometry_preview.png)")
     except Exception as exc:
         log(f"Preview skipped: {exc}")
@@ -370,13 +416,13 @@ def main(hfss_factory=None):
         call(hfss.analyze_setup, **{"name": SETUP_NAME, "cores|num_cores": NUM_CORES, "tasks|num_tasks": 1})
         solve_time = time.time() - t0
         log(f"Solve finished in {solve_time / 60:.1f} min")
-        write_run_info(run_dir, p, {"adapt_freq_ghz": adapt, "max_passes": s["max_passes"],
+        write_run_info(run_dir, p, {"adapt_freq_ghz": " ".join(f"{f:g}" for f in adapt), "max_passes": s["max_passes"],
                                     "solve_time": f"{solve_time / 60:.1f} min"})
         call(hfss.save_project, **{"file_name|project_file": project_file})
 
         for name, fn in (("S-parameters", lambda: export_sparams(hfss, run_dir)),
                          ("far-field patterns", lambda: export_patterns(hfss, run_dir, freqs)),
-                         ("field plots", lambda: export_field_plots(hfss, run_dir, metal))):
+                         ("field plots", lambda: export_field_plots(hfss, run_dir, metal, adapt))):
             try:
                 fn()
             except Exception:

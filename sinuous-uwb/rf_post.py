@@ -12,7 +12,7 @@ WHAT IS COMPUTED
     Polarization Y = arms 2 & 4 driven 180 deg apart (ports P2, P4)
   Sdd11 = (S11 - S13 - S31 + S33) / 2      -> how well polarization X is matched
   Sdd21 = (S21 - S23 - S41 + S43) / 2      -> leakage from X into Y (isolation)
-  Reference impedance of a pair = 2 x port impedance (2 x 66.5 = 133 ohm by default),
+  Reference impedance of a pair = 2 x port impedance (2 x 100 = 200 ohm by default),
   which is what the Klopfenstein balun will transform to 50 ohm in the full antenna.
 """
 
@@ -102,6 +102,15 @@ def mixed_mode(s, pair_a=(0, 2), pair_b=(1, 3)):
     return sdd_aa, sdd_bb, sdd_ba
 
 
+def active_cp(s, phases_deg=(0, 90, 180, 270)):
+    """Reflection seen at each arm when all four arms are driven together, 90 deg apart
+    (= the two differential pairs 1-3 and 2-4 fed in quadrature). Returns the average over the
+    four ports (they are equal by symmetry). This is the S11 the group cares about."""
+    a = np.exp(1j * np.radians(np.asarray(phases_deg, dtype=float)))
+    g = np.einsum("fkj,j->fk", s, a) / a
+    return g.mean(axis=1)
+
+
 def db(x):
     return 20 * np.log10(np.maximum(np.abs(x), 1e-12))
 
@@ -147,6 +156,26 @@ def _band_shade(ax, f_low, f_high):
     ax.axvspan(f_low, f_high, color="#2a78d6", alpha=0.06, lw=0)
     ax.text(f_low, 0.97, f" design band {f_low:g}-{f_high:g} GHz", transform=ax.get_xaxis_transform(),
             color=MUTED, fontsize=8, va="top")
+
+
+def plot_active(out_dir, f_ghz, g_cp, z_port, f_low, f_high):
+    plt = _plt()
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    _band_shade(ax, f_low, f_high)
+    ax.plot(f_ghz, db(g_cp), color=C1, label="all 4 arms, 0/90/180/270 deg")
+    ax.axhline(-10, color=MUTED, lw=1, ls=":")
+    ax.text(f_ghz[0], -10, " -10 dB", color=MUTED, fontsize=8, va="bottom")
+    ax.set_xlabel("Frequency (GHz)")
+    ax.set_ylabel("S11 (dB)")
+    ax.set_title(f"S11, opposite-arm pairs fed differentially and 90 deg apart "
+                 f"({2 * z_port:g} ohm per pair)", color=INK, fontsize=10)
+    ax.set_ylim(min(-40, float(np.nanmin(db(g_cp))) - 2), 0)
+    ax.legend(loc="lower right")
+    fig.tight_layout()
+    path = os.path.join(out_dir, "00_S11_quadrature_feed.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
 
 
 def plot_sparams(out_dir, f_ghz, sdd11, sdd22, sdd21, zref, f_low, f_high):
@@ -308,7 +337,8 @@ def plot_patterns(out_dir, rows):
         nrows = int(math.ceil(n / cols))
         fig, axes = plt.subplots(nrows, cols, figsize=(3.4 * cols, 4.1 * nrows),
                                  subplot_kw={"projection": "polar"}, squeeze=False)
-        peak = max((v for m, f, p, t, q, v in rows if m == mode), default=0)
+        qset = {c[0] for c in curves}
+        peak = max((v for m, f, p, t, q, v in rows if m == mode and q in qset), default=0)
         top = 5 * math.ceil((peak + 1) / 5)
         for ax, f in zip(axes.flat, freqs):
             for qty, phi, col, ls, lab in curves:
@@ -378,9 +408,9 @@ def process_run(run_dir, f_low=None, f_high=None, z_port=None):
     if os.path.exists(meta_path):
         with open(meta_path, newline="") as fh:
             meta = {r["key"]: r["value"] for r in csv.DictReader(fh)}
-    f_low = f_low or float(meta.get("f_low_ghz", 0.8))
-    f_high = f_high or float(meta.get("f_high_ghz", 8.0))
-    z_port = z_port or float(meta.get("port_impedance_ohm", 66.5))
+    f_low = f_low or float(meta.get("f_low_ghz", 2.0))
+    f_high = f_high or float(meta.get("f_high_ghz", 10.0))
+    z_port = z_port or float(meta.get("port_impedance_ohm", 100.0))
     zref = 2 * z_port
 
     plots, lines = [], []
@@ -403,14 +433,17 @@ def process_run(run_dir, f_low=None, f_high=None, z_port=None):
         s = renormalize(s, z0, z_port)
         f_ghz = freq / 1e9
         sdd11, sdd22, sdd21 = mixed_mode(s)
+        g_cp = active_cp(s)
         with open(os.path.join(run_dir, "sparams_mixed_mode.csv"), "w", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(["freq_ghz", "sdd11_db", "sdd22_db", "sdd21_db", "vswr_x", "zin_re_ohm", "zin_im_ohm"])
+            w.writerow(["freq_ghz", "s11_quadrature_db", "sdd11_db", "sdd22_db", "sdd21_db", "vswr_x",
+                        "zin_re_ohm", "zin_im_ohm"])
             zin = zref * (1 + sdd11) / (1 - sdd11)
             for i in range(f_ghz.size):
-                w.writerow([f"{f_ghz[i]:.5f}", f"{db(sdd11[i]):.3f}", f"{db(sdd22[i]):.3f}",
+                w.writerow([f"{f_ghz[i]:.5f}", f"{db(g_cp[i]):.3f}", f"{db(sdd11[i]):.3f}", f"{db(sdd22[i]):.3f}",
                             f"{db(sdd21[i]):.3f}", f"{vswr(sdd11[i]):.3f}", f"{zin[i].real:.2f}",
                             f"{zin[i].imag:.2f}"])
+        plots.append(plot_active(run_dir, f_ghz, g_cp, z_port, f_low, f_high))
         plots += plot_sparams(run_dir, f_ghz, sdd11, sdd22, sdd21, zref, f_low, f_high)
 
         inb = (f_ghz >= f_low) & (f_ghz <= f_high)
@@ -418,6 +451,13 @@ def process_run(run_dir, f_low=None, f_high=None, z_port=None):
         good = bands_below(f_ghz, rl, -10)
         frac = float(np.mean(rl[inb] <= -10)) * 100 if inb.any() else float("nan")
         lines.append("## Key numbers\n")
+        rq = db(g_cp)
+        goodq = bands_below(f_ghz, rq, -10)
+        fracq = float(np.mean(rq[inb] <= -10)) * 100 if inb.any() else float("nan")
+        lines.append(f"- **S11 with the 90-degree quadrature feed** (pairs 1-3 and 2-4 differential, 90 deg apart, "
+                     f"{2 * z_port:g} ohm per pair): below -10 dB over {fracq:.0f}% of {f_low:g}-{f_high:g} GHz; ranges " +
+                     (", ".join(f"{a:.2f}-{b:.2f} GHz" for a, b in goodq) if goodq else "none") +
+                     (f"; worst {rq[inb].max():.1f} dB at {f_ghz[inb][np.argmax(rq[inb])]:.2f} GHz" if inb.any() else ""))
         lines.append(f"- Reference impedance: {zref:g} ohm differential per polarization "
                      f"(= what the balun must match to 50 ohm).")
         lines.append(f"- Frequency ranges with |Sdd11| below -10 dB: " +
@@ -461,7 +501,7 @@ def process_run(run_dir, f_low=None, f_high=None, z_port=None):
     lines.append("- **Return loss / VSWR**: below -10 dB (VSWR below 2) means at least 90% of the power "
                  "goes into the antenna instead of bouncing back.")
     lines.append("- **Isolation**: how much of polarization X leaks into polarization Y. Below -20 dB is good.")
-    lines.append("- **Impedance**: a self-complementary 4-arm sinuous should sit near 133 ohm with small "
+    lines.append("- **Impedance**: a self-complementary 4-arm sinuous should sit near 220 ohm on this substrate (266 ohm in free space) with small "
                  "reactance across the band; big swings show where the geometry is truncated.")
     lines.append("- **Patterns**: this model has no cavity yet, so the antenna radiates up and down "
                  "equally (two lobes). The cavity + absorber step removes the downward lobe.")
