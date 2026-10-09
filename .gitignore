@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Antenna simulation outputs (large HFSS files)
+results/
+*.aedtresults/
+*.aedt.lock
+*.aedt.auto
+*.semaphore
+*.asol
+patcharray_*/
