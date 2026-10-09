@@ -4,7 +4,7 @@ HFSS / PyAEDT scripts for RF antenna research (UNC Charlotte).
 
 | Folder | Project |
 |---|---|
-| [`sinuous-uwb/`](sinuous-uwb/) | 4-arm sinuous ultra-wideband antenna, 0.8–8 GHz |
+| [`sinuous-uwb/`](sinuous-uwb/) | 4-arm sinuous ultra-wideband antenna, 2–10 GHz |
 | [`patch-array-80ghz/`](patch-array-80ghz/) | 80 GHz series-fed patch array with optimizer (original + fixed version) |
 
 ## Opening this in PyCharm on the remote desktop
